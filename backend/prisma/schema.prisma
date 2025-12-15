@@ -1,0 +1,275 @@
+// FOOD-O-NATION COMPLETE SCHEMA
+// Includes User, Admin, Beneficiary, Donor, Operations, and Logs
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql" 
+  url      = env("DATABASE_URL")
+}
+
+// =========================================================
+// ENUMS
+// =========================================================
+
+enum Status {
+  PENDING
+  APPROVED
+  REJECTED
+  DEACTIVATED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum CivilStatus {
+  SINGLE
+  MARRIED
+  DIVORCED
+  WIDOWED
+}
+
+enum DonorType {
+  INDIVIDUAL
+  ORGANIZATION
+  BUSINESS
+}
+
+enum DonationStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum ProgramStatus {
+  PENDING
+  APPROVED
+  CLAIMED   // <--- Success
+  CANCELED  // <--- User canceled
+  REJECTED  // <--- Admin rejected
+}
+// =========================================================
+// 1. CORE USER MANAGEMENT
+// =========================================================
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  password      String
+  profileImage  String? //Added profile image field. [02/12/2025]
+  status        Status    @default(PENDING)
+
+  // ✅ NEW FIELDS FOR OTP AUTHENTICATION [05/12/2025]
+  isVerified    Boolean   @default(false)  // False until they enter the code
+  otpCode       String?                    // The 6-digit code (nullable)
+  otpExpiresAt  DateTime?                  // Expiration timestamp (nullable)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Profiles (1:1 Relations)
+  beneficiaryProfile Beneficiary?
+  donorProfile       Donor?
+  adminProfile       Admin?
+
+  // Logs (1:N Relation)
+  activityLogs       ActivityLog[]
+}
+
+//I have just added the table for admins. [28//11/2025]
+// =========================================================
+// 2. ADMIN PROFILE (1:1 with User)
+// =========================================================
+model Admin {
+  id            String    @id @default(uuid())
+  firstName     String
+  lastName      String
+  
+  // Relations
+  userId        String    @unique
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// =========================================================
+// 3. BENEFICIARY PROFILE (1:1 with User)
+// =========================================================
+model Beneficiary {
+  id                    String      @id @default(uuid())
+  firstName             String
+  lastName              String
+  middleName            String?
+  gender                Gender
+  birthDate             DateTime
+  contactNumber         String
+  age                   Int
+  civilStatus           CivilStatus
+  occupation            String
+  householdNumber       Int
+  householdAnnualSalary Float
+
+  // Relations
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  address               Address?              // 1:1 relation
+  programRegistrations  ProgramRegistration[] // 1:N relation
+}
+
+// =========================================================
+// 4. ADDRESS (1:1 with Beneficiary)
+// =========================================================
+model Address {
+  id            String    @id @default(uuid())
+  streetNumber  String
+  barangay      String
+  municipality  String
+  region        String
+  country       String    @default("Philippines")
+  zipCode       String
+
+  // Foreign Key to Beneficiary
+  beneficiaryId String    @unique
+  beneficiary   Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+}
+
+// =========================================================
+// 5. DONOR PROFILE (1:1 with User)
+// =========================================================
+model Donor {
+  id            String    @id @default(uuid())
+  displayName   String
+  donorType     DonorType
+  totalDonation Float?    // Derived/Optional field
+
+  // ✅ NEW: Points Attribute
+  points        Int       @default(0)
+
+  // Relations
+  userId        String    @unique
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  donations     Donation[] // 1:N relation
+}
+
+// ✅ THE SHARED "PLACE" OBJECT
+// A Location record holds the coordinates/address for exactly ONE purpose.
+model Place {
+  id        String   @id @default(uuid())
+  name      String   // e.g., "QC Warehouse" OR "Luneta Grandstand"
+  address   String
+  latitude  Float
+  longitude Float
+
+  // Relations
+  donationCenter DonationCenter?
+  programs        Program[]
+}
+
+// ✅ 2. DONATION CENTER (Unchanged, looks good)
+model DonationCenter {
+  id          String     @id @default(uuid())
+  contactInfo String
+  
+  // 1:1 Relation to Place
+  placeId     String     @unique 
+  place       Place      @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  donations   Donation[]
+}
+
+// ✅ 3. PROGRAM (Fixed Relation)
+model Program {
+  id                  String   @id @default(uuid())
+  title               String
+  description         String
+  date                DateTime
+  maxParticipants     Int
+  currentParticipants Int      @default(0)
+  
+  // ⚡ FIX: Removed @unique so multiple programs can share the same venue
+  placeId             String   
+  place               Place    @relation(fields: [placeId], references: [id]) // Removed Cascade to be safe
+
+  donations           Donation[]
+  registrations       ProgramRegistration[]
+
+  createdAt           DateTime @default(now())
+}
+
+// Updated Donation Model to support General Donations and Itemized Tracking [06/12/2025] - 8:00 PM
+// ✅ 4. DONATION (Fixed for General Donations)
+model Donation {
+  id               String          @id @default(uuid())
+  status           DonationStatus  @default(SCHEDULED)
+  scheduledDate    DateTime
+  createdAt        DateTime        @default(now())
+
+  // Who is donating?
+  donorId          String?
+  donor            Donor?         @relation(fields: [donorId], references: [id])
+
+  // ⚡ FIX: Made Optional (?) so users can make general donations
+  programId        String?         
+  program          Program?        @relation(fields: [programId], references: [id])
+
+  // ✅ NEW: Guest Details (For non-logged in users)
+  guestName        String?         // e.g., "Good Samaritan"
+  guestEmail       String?         // To email the receipt
+  
+  // ✅ NEW: Payment Tracking (For Monetary Donations)
+  paymentReference String?         // e.g., "PAYID-123456" or "GCASH-Ref-001"
+  paymentMethod    String?         // e.g., "GCash", "PayPal", "Credit Card"
+
+  // Where is it going? (Required - must be dropped off somewhere)
+  donationCenterId String
+  donationCenter   DonationCenter  @relation(fields: [donationCenterId], references: [id])
+
+  items            DonationItem[]
+}
+
+// ✅ New Model: Tracks individual items within a donation
+model DonationItem {
+  id          String   @id @default(uuid())
+  name        String   // e.g., "Rice", "Canned Goods", "Cash"
+  category    String   // e.g., "Food", "Hygiene", "Monetary"
+  quantity    Float    // e.g., 50
+  unit        String   // e.g., "kg", "pcs", "PHP"
+  
+  // Relations
+  donationId  String
+  donation    Donation @relation(fields: [donationId], references: [id], onDelete: Cascade)
+}
+
+// =========================================================
+// 9. PROGRAM REGISTRATION (M:N junction table)
+// =========================================================
+model ProgramRegistration {
+  id            String    @id @default(uuid())
+  status        ProgramStatus @default(PENDING)
+  registeredAt  DateTime  @default(now())
+
+  // Relations
+  programId     String
+  program       Program   @relation(fields: [programId], references: [id])
+
+  beneficiaryId String
+  beneficiary   Beneficiary @relation(fields: [beneficiaryId], references: [id])
+
+  @@unique([programId, beneficiaryId]) // Enforce unique registration per program/beneficiary
+}
+
+// =========================================================
+// 10. ACTIVITY LOG (N:1 with User)
+// =========================================================
+model ActivityLog {
+  id        String   @id @default(uuid())
+  action    String
+  details   String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+}
